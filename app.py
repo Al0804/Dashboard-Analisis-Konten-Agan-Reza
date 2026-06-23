@@ -7,18 +7,18 @@ import os
 import time
 import matplotlib.pyplot as plt
 import seaborn as sns
+import gspread
+from google.oauth2.service_account import Credentials
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # ==============================================================================
-# 1. KONFIGURASI HALAMAN & DATABASE LOKAL
+# 1. KONFIGURASI HALAMAN & DATABASE GOOGLE SHEETS
 # ==============================================================================
 st.set_page_config(page_title="Dashboard Agan Reza", layout="wide")
 st.title("Dashboard Analisis Komentar Review Episode")
-st.write("Pantau mayoritas topik pembicaraan penonton secara Real-Time.")
-
-DB_FILE = "riwayat_analisis_lengkap.csv"
+st.write("Pantau mayoritas topik pembicaraan penonton secara Real-Time via Cloud Database.")
 
 # Urutan disesuaikan dengan indeks asli saat model di-training
 kolom_kategori = ['Diskusi_Cerita', 'Evaluasi_Teknis', 'Q&A', 'Permintaan_Konten', 'Apresiasi_Kreator']
@@ -26,6 +26,71 @@ kolom_visualisasi = kolom_kategori + ['Outlier']
 
 sns.set_theme(style="whitegrid")
 plt.rcParams.update({'font.size': 10})
+
+# --- FUNGSI AMANKAN KONEKSI GSHEETS ---
+@st.cache_resource
+def koneksi_gsheet():
+    try:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        # Mengambil kredensial dari Streamlit Secrets
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_url(st.secrets["gsheet_url"]).sheet1
+        return sheet
+    except Exception as e:
+        return None
+
+sheet = koneksi_gsheet()
+
+# Peringatan kalau lu belum pasang Secrets di Streamlit / Lokal
+if sheet is None:
+    st.error("⚠️ Google Sheets API Belum Terhubung atau Secrets belum disetting!")
+    with st.expander("Klik di sini untuk panduan setting rahasia Streamlit Cloud"):
+        st.markdown("""
+        **Cara hubungin ke Google Sheets:**
+        1. Bikin Service Account di Google Cloud Console, download file JSON-nya.
+        2. Bikin Google Sheets baru, terus **Share/Bagikan** email service account lu ke dalam sheet sebagai **Editor**.
+        3. Di menu **Advanced Settings -> Secrets** (Streamlit Cloud), isi dengan format ini:
+        ```toml
+        gsheet_url = "PASTE_LINK_URL_GOOGLE_SHEETS_LU_DISINI"
+
+        [gcp_service_account]
+        type = "service_account"
+        project_id = "..."
+        private_key_id = "..."
+        private_key = "..."
+        client_email = "..."
+        # ... isi sisanya persis sesuai isi file JSON yang lu download tadi!
+        ```
+        """)
+    st.stop() # Hentikan program supaya gak error beruntun ke bawah
+
+# ==============================================================================
+# UTILITY FUNGSI GSHEETS (PENGGANTI READ/WRITE CSV)
+# ==============================================================================
+def baca_gsheet():
+    if sheet is None: return pd.DataFrame()
+    records = sheet.get_all_records()
+    if not records:
+        return pd.DataFrame(columns=['Series', 'Episode', 'Komentar_Teks'] + kolom_visualisasi)
+    return pd.DataFrame(records)
+
+def simpan_ke_gsheet(df_baru):
+    if sheet is None: return
+    data_list = df_baru.fillna("").values.tolist()
+    if len(sheet.get_all_values()) == 0:
+        sheet.append_row(df_baru.columns.tolist())
+    sheet.append_rows(data_list)
+
+def tulis_ulang_gsheet(df_total):
+    if sheet is None: return
+    sheet.clear()
+    sheet.append_row(df_total.columns.tolist())
+    if not df_total.empty:
+        sheet.append_rows(df_total.fillna("").values.tolist())
 
 # --- INISIALISASI MEMORI STREAMLIT ---
 if 'analisis_selesai' not in st.session_state:
@@ -36,12 +101,10 @@ if 'total_kategori' not in st.session_state:
     st.session_state.total_kategori = None
 if 'kolom_teks_aktif' not in st.session_state:
     st.session_state.kolom_teks_aktif = 'komentar'
-# State untuk pesan hasil save (ditampilkan di luar form)
 if 'save_status' not in st.session_state:
     st.session_state.save_status = None
 if 'save_message' not in st.session_state:
     st.session_state.save_message = None
-# State untuk notifikasi auto-refresh pasca hapus data
 if 'hapus_notif' not in st.session_state:
     st.session_state.hapus_notif = None
 
@@ -207,8 +270,8 @@ with tab_analisis:
         st.dataframe(st.session_state.df_final[[st.session_state.kolom_teks_aktif] + kolom_visualisasi].head(100))
 
         st.markdown("---")
-        st.markdown("### 💾 Simpan Hasil ke Database Riwayat")
-        st.info("Simpan data ini agar komentarnya bisa dipantau di tab Riwayat.")
+        st.markdown("### 💾 Simpan Hasil ke Cloud Database")
+        st.info("Data disalin langsung ke Google Sheets Agan Reza secara Real-Time.")
 
         if st.session_state.save_status == 'success':
             st.success(st.session_state.save_message)
@@ -219,10 +282,10 @@ with tab_analisis:
             st.session_state.save_status = None
             st.session_state.save_message = None
 
-        # Ambil daftar series
+        # Ambil daftar series langsung dari Google Sheets
+        df_temp = baca_gsheet()
         daftar_series_tersimpan = []
-        if os.path.isfile(DB_FILE):
-            df_temp = pd.read_csv(DB_FILE)
+        if not df_temp.empty and 'Series' in df_temp.columns:
             daftar_series_tersimpan = sorted(df_temp['Series'].dropna().unique().tolist())
         opsi_dropdown = ["-- Pilih Series --"] + daftar_series_tersimpan + ["➕ Tambah Series Baru..."]
 
@@ -240,7 +303,7 @@ with tab_analisis:
                     placeholder="Hanya Angka"
                 )
 
-            tombol_simpan = st.form_submit_button("Simpan ke Database Lokal")
+            tombol_simpan = st.form_submit_button("Simpan ke Cloud Database")
 
             if tombol_simpan:
                 is_valid = True
@@ -275,11 +338,11 @@ with tab_analisis:
                     kolom_penting = ['Series', 'Episode', 'Komentar_Teks'] + kolom_visualisasi
                     df_simpan = df_simpan[kolom_penting]
 
-                    berkas_ada = os.path.isfile(DB_FILE)
-                    df_simpan.to_csv(DB_FILE, mode='a', header=not berkas_ada, index=False)
+                    # Simpan data langsung terbang ke Google Sheets
+                    simpan_ke_gsheet(df_simpan)
 
                     st.session_state.save_status = 'success'
-                    st.session_state.save_message = f"Berhasil! Data '{final_series} - {final_episode}' telah direkam ke database."
+                    st.session_state.save_message = f"Berhasil! Data '{final_series} - {final_episode}' telah direkam abadi di Google Sheets."
                     st.rerun()
 
 # ------------------------------------------------------------------------------
@@ -288,13 +351,14 @@ with tab_analisis:
 with tab_riwayat:
     st.markdown("### Pantau Dinamika Tren & Baca Komentar Penonton")
 
-    # FIX: Notifikasi auto-muncul pasca data dihapus + clean refresh
     if st.session_state.hapus_notif:
         st.success(st.session_state.hapus_notif)
         st.session_state.hapus_notif = None
 
-    if os.path.isfile(DB_FILE):
-        df_riwayat = pd.read_csv(DB_FILE)
+    # Mengambil data langsung dari awan Google Sheets
+    df_riwayat = baca_gsheet()
+
+    if not df_riwayat.empty and 'Series' in df_riwayat.columns:
         df_riwayat['Series'] = df_riwayat['Series'].astype(str).str.strip()
         df_riwayat['Episode'] = df_riwayat['Episode'].astype(str).str.strip()
 
@@ -329,6 +393,11 @@ with tab_riwayat:
 
             st.markdown("---")
             st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
+            
+            # Pengaman wajib agar data di gsheets yang berbentuk teks angka bisa dihitung matplotlib
+            for col in kolom_visualisasi:
+                df_tampil[col] = pd.to_numeric(df_tampil[col], errors='coerce').fillna(0).astype(int)
+
             hitungan_kategori = df_tampil[kolom_visualisasi].sum()
 
             m_cols = st.columns(len(kolom_visualisasi))
@@ -378,9 +447,8 @@ with tab_riwayat:
             st.info(f"Ditemukan {len(df_tampil)} komentar sesuai filter di atas.")
 
             st.markdown("---")
-            # Manajemen hapus data disembunyikan pakai expander biar rapi
             with st.expander("⚙️ Manajemen Hapus Data Database", expanded=False):
-                st.warning("Hati-hati! Data yang dihapus tidak dapat dikembalikan.")
+                st.warning("Hati-hati! Data yang dihapus dari Google Sheets tidak dapat dikembalikan.")
 
                 col_del1, col_del2 = st.columns([2, 1])
                 with col_del1:
@@ -391,20 +459,19 @@ with tab_riwayat:
                 with col_del2:
                     st.write("")
                     st.write("")
-                    # FIX: Tambahkan st.rerun() setelah menghapus CSV
                     if st.button("🗑️ Hapus Data Terpilih", use_container_width=True):
-                        with st.spinner("Menghapus data..."):
+                        with st.spinner("Menghapus data di Cloud..."):
                             time.sleep(0.5)
                             if opsi_hapus == "Semua Episode (Hapus Seluruh Series)":
                                 df_riwayat_baru = df_riwayat[df_riwayat['Series'] != pilihan_series]
-                                df_riwayat_baru.to_csv(DB_FILE, index=False)
-                                st.session_state.hapus_notif = f"Seluruh data '{pilihan_series}' berhasil dihapus!"
+                                tulis_ulang_gsheet(df_riwayat_baru)
+                                st.session_state.hapus_notif = f"Seluruh data '{pilihan_series}' berhasil dibantai dari Google Sheets!"
                             else:
                                 kondisi_hapus = (df_riwayat['Series'] == pilihan_series) & (df_riwayat['Episode'] == opsi_hapus)
                                 df_riwayat_baru = df_riwayat[~kondisi_hapus]
-                                df_riwayat_baru.to_csv(DB_FILE, index=False)
-                                st.session_state.hapus_notif = f"Data '{pilihan_series} - {opsi_hapus}' berhasil dihapus!"
+                                tulis_ulang_gsheet(df_riwayat_baru)
+                                st.session_state.hapus_notif = f"Data '{pilihan_series} - {opsi_hapus}' berhasil dihapus dari Google Sheets!"
                             
-                            st.rerun() # Tendangan maut buat auto-refresh layar
+                            st.rerun()
     else:
-        st.info("Belum ada data yang tersimpan di database lokal. Silakan analisis video di tab sebelah dan klik 'Simpan'.")
+        st.info("Belum ada data yang tersimpan di Cloud Database. Silakan analisis video di tab sebelah dan klik 'Simpan'.")
