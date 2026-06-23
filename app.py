@@ -1,0 +1,410 @@
+import streamlit as st
+import pandas as pd
+import torch
+import numpy as np
+import re
+import os
+import time
+import matplotlib.pyplot as plt
+import seaborn as sns
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+# ==============================================================================
+# 1. KONFIGURASI HALAMAN & DATABASE LOKAL
+# ==============================================================================
+st.set_page_config(page_title="Dashboard Agan Reza", layout="wide")
+st.title("Dashboard Analisis Komentar Review Episode")
+st.write("Pantau mayoritas topik pembicaraan penonton secara Real-Time.")
+
+DB_FILE = "riwayat_analisis_lengkap.csv"
+
+# Urutan disesuaikan dengan indeks asli saat model di-training
+kolom_kategori = ['Diskusi_Cerita', 'Evaluasi_Teknis', 'Q&A', 'Permintaan_Konten', 'Apresiasi_Kreator']
+kolom_visualisasi = kolom_kategori + ['Outlier']
+
+sns.set_theme(style="whitegrid")
+plt.rcParams.update({'font.size': 10})
+
+# --- INISIALISASI MEMORI STREAMLIT ---
+if 'analisis_selesai' not in st.session_state:
+    st.session_state.analisis_selesai = False
+if 'df_final' not in st.session_state:
+    st.session_state.df_final = None
+if 'total_kategori' not in st.session_state:
+    st.session_state.total_kategori = None
+if 'kolom_teks_aktif' not in st.session_state:
+    st.session_state.kolom_teks_aktif = 'komentar'
+# State untuk pesan hasil save (ditampilkan di luar form)
+if 'save_status' not in st.session_state:
+    st.session_state.save_status = None
+if 'save_message' not in st.session_state:
+    st.session_state.save_message = None
+# State untuk notifikasi auto-refresh pasca hapus data
+if 'hapus_notif' not in st.session_state:
+    st.session_state.hapus_notif = None
+
+# ==============================================================================
+# 2. CACHE MODEL & FUNGSI YOUTUBE SCRAPING
+# ==============================================================================
+@st.cache_resource
+def load_model():
+    path_model = "./model_final_siap_pakai"
+    tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
+    model = AutoModelForSequenceClassification.from_pretrained(path_model)
+    return tokenizer, model
+
+tokenizer, model = load_model()
+
+def ekstrak_video_id(url):
+    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
+    if match:
+        return match.group(1)
+    return None
+
+def tarik_komentar_youtube(video_id, api_key, max_komen=2000):
+    youtube = build('youtube', 'v3', developerKey=api_key)
+    daftar_komentar = []
+    try:
+        request = youtube.commentThreads().list(
+            part="snippet", videoId=video_id, maxResults=100, textFormat="plainText"
+        )
+        while request and len(daftar_komentar) < max_komen:
+            response = request.execute()
+            for item in response['items']:
+                komen = item['snippet']['topLevelComment']['snippet']['textDisplay']
+                daftar_komentar.append(komen)
+                if len(daftar_komentar) >= max_komen:
+                    break
+            request = youtube.commentThreads().list_next(request, response)
+        return daftar_komentar
+    except HttpError as e:
+        st.error(f"Terjadi kesalahan pada API YouTube. Pastikan API Key valid. Detail: {e}")
+        return []
+
+# ==============================================================================
+# 3. SISTEM TAB NAVIGASI
+# ==============================================================================
+tab_analisis, tab_riwayat = st.tabs(["🔍 Analisis AI Real-Time", "🗂️ Riwayat & Tren Database"])
+
+# ------------------------------------------------------------------------------
+# TAB 1: MESIN ANALISIS
+# ------------------------------------------------------------------------------
+with tab_analisis:
+    mode_input = st.radio(
+        "Pilih Metode Analisis:",
+        ('Tarik dari Link YouTube (Real-Time)', 'Unggah File CSV (Data Lama)')
+    )
+
+    df_mentah = None
+    kolom_teks = 'komentar'
+    mulai_proses = False
+
+    if mode_input == 'Tarik dari Link YouTube (Real-Time)':
+        st.markdown("### Analisis Video Terbaru")
+        api_key = st.text_input("Masukkan YouTube API Key Anda:", type="password")
+        url_video = st.text_input("Masukkan Link Video YouTube:")
+
+        if st.button("Tarik & Analisis Komentar"):
+            if not api_key or not url_video:
+                st.warning("API Key dan Link Video wajib diisi!")
+            else:
+                vid_id = ekstrak_video_id(url_video)
+                if vid_id:
+                    with st.spinner('Menyedot komentar dari YouTube...'):
+                        hasil_scraping = tarik_komentar_youtube(vid_id, api_key, max_komen=2000)
+                    if hasil_scraping:
+                        st.success(f"Berhasil menarik {len(hasil_scraping)} komentar!")
+                        df_mentah = pd.DataFrame(hasil_scraping, columns=['komentar'])
+                        mulai_proses = True
+                else:
+                    st.error("Link YouTube tidak valid. Gagal menemukan Video ID.")
+
+    elif mode_input == 'Unggah File CSV (Data Lama)':
+        st.markdown("### Masukkan Data Komentar")
+        file_unggahan = st.file_uploader("Unggah file CSV komentar:", type=["csv"])
+        if file_unggahan is not None:
+            df_mentah = pd.read_csv(file_unggahan)
+            kolom_teks = 'komentar_bersih' if 'komentar_bersih' in df_mentah.columns else 'komentar'
+            if st.button("Mulai Analisis CSV"):
+                mulai_proses = True
+
+    # ==========================================================================
+    # PROSES PREDIKSI UTAMA
+    # ==========================================================================
+    if mulai_proses and df_mentah is not None:
+        teks_list = df_mentah[kolom_teks].fillna("").astype(str).tolist()
+        total_data = len(teks_list)
+
+        progress_bar = st.progress(0)
+        status_teks = st.empty()
+        semua_tebakan = []
+        batch_size = 16
+
+        with st.spinner('Model sedang menganalisis kalimat dengan cermat...'):
+            for i in range(0, total_data, batch_size):
+                batch_teks = teks_list[i : i + batch_size]
+
+                max_len = 256
+                batas_tengah = int((max_len - 2) / 2)
+
+                tokens = tokenizer(batch_teks, truncation=False, padding=False)
+                input_ids_list = []
+                attention_mask_list = []
+
+                for ids in tokens['input_ids']:
+                    if len(ids) > max_len:
+                        kepala = ids[1 : batas_tengah + 1]
+                        ekor = ids[-(batas_tengah + 1) : -1]
+                        ids_baru = [ids[0]] + kepala + ekor + [ids[-1]]
+                        mask_baru = [1] * max_len
+                    else:
+                        ids_baru = ids
+                        mask_baru = [1] * len(ids)
+
+                    input_ids_list.append(ids_baru)
+                    attention_mask_list.append(mask_baru)
+
+                inputs = tokenizer.pad(
+                    {'input_ids': input_ids_list, 'attention_mask': attention_mask_list},
+                    padding='max_length',
+                    max_length=max_len,
+                    return_tensors="pt"
+                )
+
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                probabilitas = torch.sigmoid(outputs.logits).numpy()
+                tebakan = (probabilitas > 0.5).astype(int)
+                semua_tebakan.extend(tebakan)
+
+                progress_bar.progress(min((i + batch_size) / total_data, 1.0))
+                status_teks.text(f"Menganalisis {min(i + batch_size, total_data)} / {total_data} komentar...")
+
+            kolom_yang_didrop = [kol for kol in kolom_kategori if kol in df_mentah.columns]
+            df_bersih = df_mentah.drop(columns=kolom_yang_didrop).reset_index(drop=True)
+            df_hasil = pd.DataFrame(semua_tebakan, columns=kolom_kategori)
+            df_hasil['Outlier'] = df_hasil.sum(axis=1).apply(lambda total: 1 if total == 0 else 0)
+
+            st.session_state.df_final = pd.concat([df_bersih, df_hasil], axis=1)
+            st.session_state.total_kategori = df_hasil[kolom_visualisasi].sum()
+            st.session_state.kolom_teks_aktif = kolom_teks
+            st.session_state.analisis_selesai = True
+
+        st.rerun()
+
+    # ==========================================================================
+    # TAMPILKAN VISUALISASI DARI MEMORI
+    # ==========================================================================
+    if st.session_state.analisis_selesai:
+        st.success("Analisis AI Selesai dan Tersimpan di Memori Sementara!")
+
+        st.markdown("### Ringkasan Topik Pembicaraan")
+        st.bar_chart(st.session_state.total_kategori.sort_values(ascending=False))
+
+        st.markdown("### Detail Hasil Pemisahan Komentar")
+        st.dataframe(st.session_state.df_final[[st.session_state.kolom_teks_aktif] + kolom_visualisasi].head(100))
+
+        st.markdown("---")
+        st.markdown("### 💾 Simpan Hasil ke Database Riwayat")
+        st.info("Simpan data ini agar komentarnya bisa dipantau di tab Riwayat.")
+
+        if st.session_state.save_status == 'success':
+            st.success(st.session_state.save_message)
+            st.session_state.save_status = None
+            st.session_state.save_message = None
+        elif st.session_state.save_status == 'error':
+            st.error(st.session_state.save_message)
+            st.session_state.save_status = None
+            st.session_state.save_message = None
+
+        # Ambil daftar series
+        daftar_series_tersimpan = []
+        if os.path.isfile(DB_FILE):
+            df_temp = pd.read_csv(DB_FILE)
+            daftar_series_tersimpan = sorted(df_temp['Series'].dropna().unique().tolist())
+        opsi_dropdown = ["-- Pilih Series --"] + daftar_series_tersimpan + ["➕ Tambah Series Baru..."]
+
+        with st.form(key='form_simpan', clear_on_submit=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                pilih_series = st.selectbox("Pilih Judul Series:", opsi_dropdown)
+                input_rider_baru = st.text_input(
+                    "Jika tambah baru, ketik nama Rider-nya saja (Contoh: Gavv, Geats):",
+                    placeholder="Kosongkan jika sudah memilih dari list di atas."
+                )
+            with col2:
+                input_episode = st.text_input(
+                    "Nomor Episode (Cukup ketik angkanya saja, misal: 1, 12, 45):",
+                    placeholder="Hanya Angka"
+                )
+
+            tombol_simpan = st.form_submit_button("Simpan ke Database Lokal")
+
+            if tombol_simpan:
+                is_valid = True
+                final_series = ""
+
+                if pilih_series == "-- Pilih Series --":
+                    st.error("Silakan pilih atau tambah Series terlebih dahulu!")
+                    is_valid = False
+                elif pilih_series == "➕ Tambah Series Baru...":
+                    if input_rider_baru.strip():
+                        final_series = f"Kamen Rider {input_rider_baru.strip()}"
+                    else:
+                        st.error("Nama Rider baru belum diisi!")
+                        is_valid = False
+                else:
+                    final_series = pilih_series
+
+                final_episode = ""
+                if input_episode.strip():
+                    final_episode = f"Episode {input_episode.strip()}"
+                else:
+                    if is_valid:
+                        st.error("Nomor episode wajib diisi!")
+                    is_valid = False
+
+                if is_valid:
+                    df_simpan = st.session_state.df_final.copy()
+                    df_simpan['Series'] = final_series
+                    df_simpan['Episode'] = final_episode
+                    df_simpan = df_simpan.rename(columns={st.session_state.kolom_teks_aktif: "Komentar_Teks"})
+
+                    kolom_penting = ['Series', 'Episode', 'Komentar_Teks'] + kolom_visualisasi
+                    df_simpan = df_simpan[kolom_penting]
+
+                    berkas_ada = os.path.isfile(DB_FILE)
+                    df_simpan.to_csv(DB_FILE, mode='a', header=not berkas_ada, index=False)
+
+                    st.session_state.save_status = 'success'
+                    st.session_state.save_message = f"Berhasil! Data '{final_series} - {final_episode}' telah direkam ke database."
+                    st.rerun()
+
+# ------------------------------------------------------------------------------
+# TAB 2: DASHBOARD TREN & FILTER KOMENTAR
+# ------------------------------------------------------------------------------
+with tab_riwayat:
+    st.markdown("### Pantau Dinamika Tren & Baca Komentar Penonton")
+
+    # FIX: Notifikasi auto-muncul pasca data dihapus + clean refresh
+    if st.session_state.hapus_notif:
+        st.success(st.session_state.hapus_notif)
+        st.session_state.hapus_notif = None
+
+    if os.path.isfile(DB_FILE):
+        df_riwayat = pd.read_csv(DB_FILE)
+        df_riwayat['Series'] = df_riwayat['Series'].astype(str).str.strip()
+        df_riwayat['Episode'] = df_riwayat['Episode'].astype(str).str.strip()
+
+        daftar_series = df_riwayat['Series'].unique().tolist()
+        pilihan_series = st.selectbox("Pilih Judul Series untuk dianalisis:", daftar_series)
+
+        if pilihan_series:
+            data_terpilih = df_riwayat[df_riwayat['Series'] == pilihan_series].copy()
+
+            col_ep, col_kat = st.columns(2)
+
+            def urutkan_episode(ep_str):
+                try:
+                    return int(str(ep_str).replace("Episode ", "").strip())
+                except:
+                    return 999
+
+            daftar_ep_mentah = data_terpilih['Episode'].unique().tolist()
+            daftar_ep_urut = sorted(daftar_ep_mentah, key=urutkan_episode)
+
+            with col_ep:
+                filter_ep = st.selectbox("Filter Episode:", ["Semua Episode"] + daftar_ep_urut)
+            with col_kat:
+                filter_kat = st.selectbox("Filter Kategori Spesifik:", ["Semua Kategori"] + kolom_visualisasi)
+
+            df_tampil = data_terpilih.copy()
+            if filter_ep != "Semua Episode":
+                df_tampil = df_tampil[df_tampil['Episode'] == filter_ep]
+
+            if filter_kat != "Semua Kategori":
+                df_tampil = df_tampil[df_tampil[filter_kat] == 1]
+
+            st.markdown("---")
+            st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
+            hitungan_kategori = df_tampil[kolom_visualisasi].sum()
+
+            m_cols = st.columns(len(kolom_visualisasi))
+            for idx, kat in enumerate(kolom_visualisasi):
+                nama_label_bersih = kat.replace("_", " ")
+                m_cols[idx].metric(label=nama_label_bersih, value=int(hitungan_kategori[kat]))
+
+            st.markdown("---")
+            fig_riwayat, ax_riwayat = plt.subplots(figsize=(12, 6))
+
+            if filter_ep == "Semua Episode":
+                st.markdown(f"**Grafik Perjalanan Tren: {pilihan_series}**")
+                grafik_data = df_tampil.groupby('Episode')[kolom_visualisasi].sum().reset_index()
+
+                grafik_data['Sort_Key'] = grafik_data['Episode'].apply(urutkan_episode)
+                grafik_data = grafik_data.sort_values('Sort_Key').drop(columns=['Sort_Key'])
+
+                grafik_melted = grafik_data.melt(
+                    id_vars=['Episode'], value_vars=kolom_visualisasi,
+                    var_name='Kategori', value_name='Total Komentar'
+                )
+
+                sns.barplot(data=grafik_melted, x='Episode', y='Total Komentar', hue='Kategori', palette='tab10', ax=ax_riwayat)
+                ax_riwayat.set_title(f'Distribusi Tren - {pilihan_series}', pad=15, fontweight='bold', fontsize=14)
+            else:
+                st.markdown(f"**Distribusi Topik: {pilihan_series} ({filter_ep})**")
+                sns.barplot(x=hitungan_kategori.index, y=hitungan_kategori.values, palette='tab10', ax=ax_riwayat)
+                ax_riwayat.set_title(f'Fokus Topik - {filter_ep}', pad=15, fontweight='bold', fontsize=14)
+
+            ax_riwayat.set_xlabel('Kategori / Episode', fontweight='bold')
+            ax_riwayat.set_ylabel('Jumlah Komentar', fontweight='bold')
+            plt.xticks(rotation=45, ha='right')
+            if filter_ep == "Semua Episode":
+                plt.legend(title='Kategori', bbox_to_anchor=(1.02, 1), loc='upper left')
+            plt.tight_layout()
+            st.pyplot(fig_riwayat)
+
+            st.markdown("---")
+            st.markdown(f"**Tabel Eksplorasi Komentar: {pilihan_series}**")
+
+            if filter_kat == "Semua Kategori":
+                kolom_tampil = ['Episode', 'Komentar_Teks'] + kolom_visualisasi
+            else:
+                kolom_tampil = ['Episode', 'Komentar_Teks', filter_kat]
+
+            st.dataframe(df_tampil[kolom_tampil], use_container_width=True)
+            st.info(f"Ditemukan {len(df_tampil)} komentar sesuai filter di atas.")
+
+            st.markdown("---")
+            # Manajemen hapus data disembunyikan pakai expander biar rapi
+            with st.expander("⚙️ Manajemen Hapus Data Database", expanded=False):
+                st.warning("Hati-hati! Data yang dihapus tidak dapat dikembalikan.")
+
+                col_del1, col_del2 = st.columns([2, 1])
+                with col_del1:
+                    opsi_hapus = st.selectbox(
+                        "Pilih rentang data yang ingin dihapus:",
+                        ["Semua Episode (Hapus Seluruh Series)"] + daftar_ep_urut
+                    )
+                with col_del2:
+                    st.write("")
+                    st.write("")
+                    # FIX: Tambahkan st.rerun() setelah menghapus CSV
+                    if st.button("🗑️ Hapus Data Terpilih", use_container_width=True):
+                        with st.spinner("Menghapus data..."):
+                            time.sleep(0.5)
+                            if opsi_hapus == "Semua Episode (Hapus Seluruh Series)":
+                                df_riwayat_baru = df_riwayat[df_riwayat['Series'] != pilihan_series]
+                                df_riwayat_baru.to_csv(DB_FILE, index=False)
+                                st.session_state.hapus_notif = f"Seluruh data '{pilihan_series}' berhasil dihapus!"
+                            else:
+                                kondisi_hapus = (df_riwayat['Series'] == pilihan_series) & (df_riwayat['Episode'] == opsi_hapus)
+                                df_riwayat_baru = df_riwayat[~kondisi_hapus]
+                                df_riwayat_baru.to_csv(DB_FILE, index=False)
+                                st.session_state.hapus_notif = f"Data '{pilihan_series} - {opsi_hapus}' berhasil dihapus!"
+                            
+                            st.rerun() # Tendangan maut buat auto-refresh layar
+    else:
+        st.info("Belum ada data yang tersimpan di database lokal. Silakan analisis video di tab sebelah dan klik 'Simpan'.")

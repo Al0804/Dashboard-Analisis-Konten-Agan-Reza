@@ -1,0 +1,10 @@
+streamlit
+pandas
+torch
+numpy
+transformers
+google-api-python-client
+matplotlib
+seaborn
+gspread
+google-auth
