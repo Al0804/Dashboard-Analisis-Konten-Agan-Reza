@@ -20,6 +20,16 @@ st.set_page_config(page_title="Dashboard Agan Reza", layout="wide")
 st.title("Dashboard Analisis Komentar Review Episode")
 st.write("Pantau mayoritas topik pembicaraan penonton secara Real-Time via Cloud Database.")
 
+# --- MANTRA CSS BUAT NYEMBUNYIKAN MENU STREAMLIT & LOGO GITHUB ---
+sembunyikan_menu = """
+<style>
+#MainMenu {visibility: hidden;}
+[data-testid="stToolbar"] {visibility: hidden;}
+footer {visibility: hidden;}
+</style>
+"""
+st.markdown(sembunyikan_menu, unsafe_allow_html=True)
+
 # Urutan disesuaikan dengan indeks asli saat model di-training
 kolom_kategori = ['Diskusi_Cerita', 'Evaluasi_Teknis', 'Q&A', 'Permintaan_Konten', 'Apresiasi_Kreator']
 kolom_visualisasi = kolom_kategori + ['Outlier']
@@ -45,7 +55,7 @@ def koneksi_gsheet():
 
 sheet = koneksi_gsheet()
 
-# Peringatan kalau lu belum pasang Secrets di Streamlit / Lokal
+# Peringatan kalau belum pasang Secrets di Streamlit / Lokal
 if sheet is None:
     st.error("⚠️ Google Sheets API Belum Terhubung atau Secrets belum disetting!")
     with st.expander("Klik di sini untuk panduan setting rahasia Streamlit Cloud"):
@@ -105,8 +115,8 @@ if 'save_status' not in st.session_state:
     st.session_state.save_status = None
 if 'save_message' not in st.session_state:
     st.session_state.save_message = None
-if 'hapus_notif' not in st.session_state:
-    st.session_state.hapus_notif = None
+if 'crud_notif' not in st.session_state:
+    st.session_state.crud_notif = None
 
 # ==============================================================================
 # 2. CACHE MODEL & FUNGSI YOUTUBE SCRAPING
@@ -351,9 +361,10 @@ with tab_analisis:
 with tab_riwayat:
     st.markdown("### Pantau Dinamika Tren & Baca Komentar Penonton")
 
-    if st.session_state.hapus_notif:
-        st.success(st.session_state.hapus_notif)
-        st.session_state.hapus_notif = None
+    # Notifikasi CRUD auto-muncul pasca edit/hapus
+    if st.session_state.crud_notif:
+        st.success(st.session_state.crud_notif)
+        st.session_state.crud_notif = None
 
     # Mengambil data langsung dari awan Google Sheets
     df_riwayat = baca_gsheet()
@@ -447,30 +458,77 @@ with tab_riwayat:
             st.info(f"Ditemukan {len(df_tampil)} komentar sesuai filter di atas.")
 
             st.markdown("---")
-            with st.expander("⚙️ Manajemen Hapus Data Database", expanded=False):
-                st.warning("Hati-hati! Data yang dihapus dari Google Sheets tidak dapat dikembalikan.")
-
-                col_del1, col_del2 = st.columns([2, 1])
-                with col_del1:
+            
+            # ==============================================================================
+            # SISTEM CRUD (EDIT & HAPUS DATA)
+            # ==============================================================================
+            with st.expander("⚙️ Manajemen & Edit Data Database", expanded=False):
+                aksi_manajemen = st.radio("Pilih Tindakan:", ["✏️ Edit Data (Typo/Ubah Nama)", "🗑️ Hapus Data"], horizontal=True)
+                
+                # --- LOGIKA EDIT DATA ---
+                if aksi_manajemen == "✏️ Edit Data (Typo/Ubah Nama)":
+                    st.info("Fitur ini digunakan jika ada kesalahan ketik (typo) pada nama Series atau nomor Episode.")
+                    
+                    label_semua_edit = f"Semua Episode {pilihan_series} (Ganti Nama Series Saja)"
+                    opsi_edit = st.selectbox(
+                        "Pilih data yang ingin diedit:",
+                        [label_semua_edit] + daftar_ep_urut
+                    )
+                    
+                    col_ed1, col_ed2 = st.columns(2)
+                    with col_ed1:
+                        series_baru = st.text_input("Nama Series Baru:", value=pilihan_series)
+                    
+                    with col_ed2:
+                        if opsi_edit != label_semua_edit:
+                            angka_lama = str(opsi_edit).replace("Episode ", "")
+                            ep_baru = st.text_input("Nomor Episode Baru (Ketik Angkanya Saja):", value=angka_lama)
+                        else:
+                            st.write("") 
+                            st.write("") 
+                            ep_baru = None
+                    
+                    if st.button("💾 Simpan Perubahan Data", use_container_width=True):
+                        with st.spinner("Memperbarui data di Cloud..."):
+                            time.sleep(0.5)
+                            df_riwayat_baru = df_riwayat.copy()
+                            
+                            if opsi_edit == label_semua_edit:
+                                # Update semua baris yang nama series-nya sama
+                                df_riwayat_baru.loc[df_riwayat_baru['Series'] == pilihan_series, 'Series'] = series_baru
+                                st.session_state.crud_notif = f"Nama Series berhasil diubah dari '{pilihan_series}' menjadi '{series_baru}'!"
+                            else:
+                                # Update hanya baris episode yang spesifik
+                                mask = (df_riwayat_baru['Series'] == pilihan_series) & (df_riwayat_baru['Episode'] == opsi_edit)
+                                df_riwayat_baru.loc[mask, 'Series'] = series_baru
+                                df_riwayat_baru.loc[mask, 'Episode'] = f"Episode {ep_baru.strip()}"
+                                st.session_state.crud_notif = f"Data '{pilihan_series} - {opsi_edit}' berhasil diperbarui!"
+                            
+                            tulis_ulang_gsheet(df_riwayat_baru)
+                            st.rerun()
+                
+                # --- LOGIKA HAPUS DATA ---
+                elif aksi_manajemen == "🗑️ Hapus Data":
+                    st.warning("Hati-hati! Data yang dihapus dari Google Sheets tidak dapat dikembalikan.")
+                    
+                    label_semua_hapus = f"Semua Episode {pilihan_series} (Hapus Seluruh Series Ini)"
                     opsi_hapus = st.selectbox(
                         "Pilih rentang data yang ingin dihapus:",
-                        ["Semua Episode (Hapus Seluruh Series)"] + daftar_ep_urut
+                        [label_semua_hapus] + daftar_ep_urut
                     )
-                with col_del2:
-                    st.write("")
-                    st.write("")
+                    
                     if st.button("🗑️ Hapus Data Terpilih", use_container_width=True):
                         with st.spinner("Menghapus data di Cloud..."):
                             time.sleep(0.5)
-                            if opsi_hapus == "Semua Episode (Hapus Seluruh Series)":
+                            if opsi_hapus == label_semua_hapus:
                                 df_riwayat_baru = df_riwayat[df_riwayat['Series'] != pilihan_series]
                                 tulis_ulang_gsheet(df_riwayat_baru)
-                                st.session_state.hapus_notif = f"Seluruh data '{pilihan_series}' berhasil dibantai dari Google Sheets!"
+                                st.session_state.crud_notif = f"Seluruh data '{pilihan_series}' berhasil dibantai dari Google Sheets!"
                             else:
                                 kondisi_hapus = (df_riwayat['Series'] == pilihan_series) & (df_riwayat['Episode'] == opsi_hapus)
                                 df_riwayat_baru = df_riwayat[~kondisi_hapus]
                                 tulis_ulang_gsheet(df_riwayat_baru)
-                                st.session_state.hapus_notif = f"Data '{pilihan_series} - {opsi_hapus}' berhasil dihapus dari Google Sheets!"
+                                st.session_state.crud_notif = f"Data '{pilihan_series} - {opsi_hapus}' berhasil dihapus dari Google Sheets!"
                             
                             st.rerun()
     else:
