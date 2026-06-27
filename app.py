@@ -20,7 +20,6 @@ st.set_page_config(page_title="Dashboard Agan Reza", layout="wide")
 st.title("Dashboard Analisis Komentar Review Episode")
 st.write("Pantau mayoritas topik pembicaraan penonton secara Real-Time via Cloud Database.")
 
-# --- MANTRA CSS BUAT NYEMBUNYIKAN MENU STREAMLIT & LOGO GITHUB ---
 sembunyikan_menu = """
 <style>
 #MainMenu {visibility: hidden;}
@@ -30,14 +29,12 @@ footer {visibility: hidden;}
 """
 st.markdown(sembunyikan_menu, unsafe_allow_html=True)
 
-# Urutan disesuaikan dengan indeks asli saat model di-training
 kolom_kategori = ['Diskusi_Cerita', 'Evaluasi_Teknis', 'Q&A', 'Permintaan_Konten', 'Apresiasi_Kreator']
 kolom_visualisasi = kolom_kategori + ['Outlier']
 
 sns.set_theme(style="whitegrid")
 plt.rcParams.update({'font.size': 10})
 
-# --- FUNGSI AMANKAN KONEKSI GSHEETS ---
 @st.cache_resource
 def koneksi_gsheet():
     try:
@@ -45,7 +42,6 @@ def koneksi_gsheet():
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-        # Mengambil kredensial dari Streamlit Secrets
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
         client = gspread.authorize(creds)
         sheet = client.open_by_url(st.secrets["gsheet_url"]).sheet1
@@ -55,7 +51,6 @@ def koneksi_gsheet():
 
 sheet = koneksi_gsheet()
 
-# Peringatan kalau belum pasang Secrets di Streamlit / Lokal
 if sheet is None:
     st.error("⚠️ Google Sheets API Belum Terhubung atau Secrets belum disetting!")
     with st.expander("Klik di sini untuk panduan setting rahasia Streamlit Cloud"):
@@ -76,10 +71,10 @@ if sheet is None:
         # ... isi sisanya persis sesuai isi file JSON yang lu download tadi!
         ```
         """)
-    st.stop() # Hentikan program supaya gak error beruntun ke bawah
+    st.stop()
 
 # ==============================================================================
-# UTILITY FUNGSI GSHEETS (PENGGANTI READ/WRITE CSV)
+# UTILITY FUNGSI GSHEETS
 # ==============================================================================
 def baca_gsheet():
     if sheet is None: return pd.DataFrame()
@@ -185,6 +180,9 @@ with tab_analisis:
             else:
                 vid_id = ekstrak_video_id(url_video)
                 if vid_id:
+                    # ✅ FIX #1: Reset state SEBELUM analisis baru dimulai
+                    # agar form lama tidak ikut muncul selama proses berlangsung
+                    st.session_state.analisis_selesai = False
                     with st.spinner('Menyedot komentar dari YouTube...'):
                         hasil_scraping = tarik_komentar_youtube(vid_id, api_key, max_komen=2000)
                     if hasil_scraping:
@@ -201,6 +199,8 @@ with tab_analisis:
             df_mentah = pd.read_csv(file_unggahan)
             kolom_teks = 'komentar_bersih' if 'komentar_bersih' in df_mentah.columns else 'komentar'
             if st.button("Mulai Analisis CSV"):
+                # ✅ FIX #1 (CSV): Reset state sebelum analisis baru
+                st.session_state.analisis_selesai = False
                 mulai_proses = True
 
     # ==========================================================================
@@ -269,8 +269,11 @@ with tab_analisis:
 
     # ==========================================================================
     # TAMPILKAN VISUALISASI DARI MEMORI
+    # ✅ FIX #2 (KUNCI UTAMA): Ganti 'if' jadi 'elif'
+    # Blok ini HANYA jalan kalau blok prediksi di atas TIDAK sedang jalan.
+    # Ini yang mencegah form muncul dobel saat model lagi proses.
     # ==========================================================================
-    if st.session_state.analisis_selesai:
+    elif st.session_state.analisis_selesai:
         st.success("Analisis AI Selesai dan Tersimpan di Memori Sementara!")
 
         st.markdown("### Ringkasan Topik Pembicaraan")
@@ -292,7 +295,6 @@ with tab_analisis:
             st.session_state.save_status = None
             st.session_state.save_message = None
 
-        # Ambil daftar series langsung dari Google Sheets
         df_temp = baca_gsheet()
         daftar_series_tersimpan = []
         if not df_temp.empty and 'Series' in df_temp.columns:
@@ -340,16 +342,16 @@ with tab_analisis:
                     is_valid = False
 
                 if is_valid:
-                    df_simpan = st.session_state.df_final.copy()
-                    df_simpan['Series'] = final_series
-                    df_simpan['Episode'] = final_episode
-                    df_simpan = df_simpan.rename(columns={st.session_state.kolom_teks_aktif: "Komentar_Teks"})
+                    with st.spinner(f'Menyimpan data "{final_series} - {final_episode}" ke Cloud Database...'):
+                        df_simpan = st.session_state.df_final.copy()
+                        df_simpan['Series'] = final_series
+                        df_simpan['Episode'] = final_episode
+                        df_simpan = df_simpan.rename(columns={st.session_state.kolom_teks_aktif: "Komentar_Teks"})
 
-                    kolom_penting = ['Series', 'Episode', 'Komentar_Teks'] + kolom_visualisasi
-                    df_simpan = df_simpan[kolom_penting]
+                        kolom_penting = ['Series', 'Episode', 'Komentar_Teks'] + kolom_visualisasi
+                        df_simpan = df_simpan[kolom_penting]
 
-                    # Simpan data langsung terbang ke Google Sheets
-                    simpan_ke_gsheet(df_simpan)
+                        simpan_ke_gsheet(df_simpan)
 
                     st.session_state.save_status = 'success'
                     st.session_state.save_message = f"Berhasil! Data '{final_series} - {final_episode}' telah direkam abadi di Google Sheets."
@@ -361,13 +363,12 @@ with tab_analisis:
 with tab_riwayat:
     st.markdown("### Pantau Dinamika Tren & Baca Komentar Penonton")
 
-    # Notifikasi CRUD auto-muncul pasca edit/hapus
     if st.session_state.crud_notif:
         st.success(st.session_state.crud_notif)
         st.session_state.crud_notif = None
 
-    # Mengambil data langsung dari awan Google Sheets
-    df_riwayat = baca_gsheet()
+    with st.spinner('Mengambil data terbaru dari Cloud Database...'):
+        df_riwayat = baca_gsheet()
 
     if not df_riwayat.empty and 'Series' in df_riwayat.columns:
         df_riwayat['Series'] = df_riwayat['Series'].astype(str).str.strip()
@@ -395,128 +396,121 @@ with tab_riwayat:
             with col_kat:
                 filter_kat = st.selectbox("Filter Kategori Spesifik:", ["Semua Kategori"] + kolom_visualisasi)
 
-            df_tampil = data_terpilih.copy()
-            if filter_ep != "Semua Episode":
-                df_tampil = df_tampil[df_tampil['Episode'] == filter_ep]
+            with st.spinner(f'Memuat data "{pilihan_series}" ({filter_ep})...'):
+                df_tampil = data_terpilih.copy()
+                if filter_ep != "Semua Episode":
+                    df_tampil = df_tampil[df_tampil['Episode'] == filter_ep]
 
-            if filter_kat != "Semua Kategori":
-                df_tampil = df_tampil[df_tampil[filter_kat] == 1]
+                if filter_kat != "Semua Kategori":
+                    df_tampil = df_tampil[df_tampil[filter_kat] == 1]
+
+                st.markdown("---")
+                st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
+
+                for col in kolom_visualisasi:
+                    df_tampil[col] = pd.to_numeric(df_tampil[col], errors='coerce').fillna(0).astype(int)
+
+                hitungan_kategori = df_tampil[kolom_visualisasi].sum()
+
+                m_cols = st.columns(len(kolom_visualisasi))
+                for idx, kat in enumerate(kolom_visualisasi):
+                    nama_label_bersih = kat.replace("_", " ")
+                    m_cols[idx].metric(label=nama_label_bersih, value=int(hitungan_kategori[kat]))
+
+                st.markdown("---")
+                fig_riwayat, ax_riwayat = plt.subplots(figsize=(12, 6))
+
+                if filter_ep == "Semua Episode":
+                    st.markdown(f"**Grafik Perjalanan Tren: {pilihan_series}**")
+                    grafik_data = df_tampil.groupby('Episode')[kolom_visualisasi].sum().reset_index()
+
+                    grafik_data['Sort_Key'] = grafik_data['Episode'].apply(urutkan_episode)
+                    grafik_data = grafik_data.sort_values('Sort_Key').drop(columns=['Sort_Key'])
+
+                    grafik_melted = grafik_data.melt(
+                        id_vars=['Episode'], value_vars=kolom_visualisasi,
+                        var_name='Kategori', value_name='Total Komentar'
+                    )
+
+                    sns.barplot(data=grafik_melted, x='Episode', y='Total Komentar', hue='Kategori', palette='tab10', ax=ax_riwayat)
+                    ax_riwayat.set_title(f'Distribusi Tren - {pilihan_series}', pad=15, fontweight='bold', fontsize=14)
+                else:
+                    st.markdown(f"**Distribusi Topik: {pilihan_series} ({filter_ep})**")
+                    sns.barplot(x=hitungan_kategori.index, y=hitungan_kategori.values, palette='tab10', ax=ax_riwayat)
+                    ax_riwayat.set_title(f'Fokus Topik - {filter_ep}', pad=15, fontweight='bold', fontsize=14)
+
+                ax_riwayat.set_xlabel('Kategori / Episode', fontweight='bold')
+                ax_riwayat.set_ylabel('Jumlah Komentar', fontweight='bold')
+                plt.xticks(rotation=45, ha='right')
+                if filter_ep == "Semua Episode":
+                    plt.legend(title='Kategori', bbox_to_anchor=(1.02, 1), loc='upper left')
+                plt.tight_layout()
+                st.pyplot(fig_riwayat)
+
+                st.markdown("---")
+                st.markdown(f"**Tabel Eksplorasi Komentar: {pilihan_series}**")
+
+                if filter_kat == "Semua Kategori":
+                    kolom_tampil = ['Episode', 'Komentar_Teks'] + kolom_visualisasi
+                else:
+                    kolom_tampil = ['Episode', 'Komentar_Teks', filter_kat]
+
+                st.dataframe(df_tampil[kolom_tampil], use_container_width=True)
+                st.info(f"Ditemukan {len(df_tampil)} komentar sesuai filter di atas.")
 
             st.markdown("---")
-            st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
-            
-            # Pengaman wajib agar data di gsheets yang berbentuk teks angka bisa dihitung matplotlib
-            for col in kolom_visualisasi:
-                df_tampil[col] = pd.to_numeric(df_tampil[col], errors='coerce').fillna(0).astype(int)
 
-            hitungan_kategori = df_tampil[kolom_visualisasi].sum()
-
-            m_cols = st.columns(len(kolom_visualisasi))
-            for idx, kat in enumerate(kolom_visualisasi):
-                nama_label_bersih = kat.replace("_", " ")
-                m_cols[idx].metric(label=nama_label_bersih, value=int(hitungan_kategori[kat]))
-
-            st.markdown("---")
-            fig_riwayat, ax_riwayat = plt.subplots(figsize=(12, 6))
-
-            if filter_ep == "Semua Episode":
-                st.markdown(f"**Grafik Perjalanan Tren: {pilihan_series}**")
-                grafik_data = df_tampil.groupby('Episode')[kolom_visualisasi].sum().reset_index()
-
-                grafik_data['Sort_Key'] = grafik_data['Episode'].apply(urutkan_episode)
-                grafik_data = grafik_data.sort_values('Sort_Key').drop(columns=['Sort_Key'])
-
-                grafik_melted = grafik_data.melt(
-                    id_vars=['Episode'], value_vars=kolom_visualisasi,
-                    var_name='Kategori', value_name='Total Komentar'
-                )
-
-                sns.barplot(data=grafik_melted, x='Episode', y='Total Komentar', hue='Kategori', palette='tab10', ax=ax_riwayat)
-                ax_riwayat.set_title(f'Distribusi Tren - {pilihan_series}', pad=15, fontweight='bold', fontsize=14)
-            else:
-                st.markdown(f"**Distribusi Topik: {pilihan_series} ({filter_ep})**")
-                sns.barplot(x=hitungan_kategori.index, y=hitungan_kategori.values, palette='tab10', ax=ax_riwayat)
-                ax_riwayat.set_title(f'Fokus Topik - {filter_ep}', pad=15, fontweight='bold', fontsize=14)
-
-            ax_riwayat.set_xlabel('Kategori / Episode', fontweight='bold')
-            ax_riwayat.set_ylabel('Jumlah Komentar', fontweight='bold')
-            plt.xticks(rotation=45, ha='right')
-            if filter_ep == "Semua Episode":
-                plt.legend(title='Kategori', bbox_to_anchor=(1.02, 1), loc='upper left')
-            plt.tight_layout()
-            st.pyplot(fig_riwayat)
-
-            st.markdown("---")
-            st.markdown(f"**Tabel Eksplorasi Komentar: {pilihan_series}**")
-
-            if filter_kat == "Semua Kategori":
-                kolom_tampil = ['Episode', 'Komentar_Teks'] + kolom_visualisasi
-            else:
-                kolom_tampil = ['Episode', 'Komentar_Teks', filter_kat]
-
-            st.dataframe(df_tampil[kolom_tampil], use_container_width=True)
-            st.info(f"Ditemukan {len(df_tampil)} komentar sesuai filter di atas.")
-
-            st.markdown("---")
-            
-            # ==============================================================================
-            # SISTEM CRUD (EDIT & HAPUS DATA)
-            # ==============================================================================
             with st.expander("⚙️ Manajemen & Edit Data Database", expanded=False):
                 aksi_manajemen = st.radio("Pilih Tindakan:", ["✏️ Edit Data (Typo/Ubah Nama)", "🗑️ Hapus Data"], horizontal=True)
-                
-                # --- LOGIKA EDIT DATA ---
+
                 if aksi_manajemen == "✏️ Edit Data (Typo/Ubah Nama)":
                     st.info("Fitur ini digunakan jika ada kesalahan ketik (typo) pada nama Series atau nomor Episode.")
-                    
+
                     label_semua_edit = f"Semua Episode {pilihan_series} (Ganti Nama Series Saja)"
                     opsi_edit = st.selectbox(
                         "Pilih data yang ingin diedit:",
                         [label_semua_edit] + daftar_ep_urut
                     )
-                    
+
                     col_ed1, col_ed2 = st.columns(2)
                     with col_ed1:
                         series_baru = st.text_input("Nama Series Baru:", value=pilihan_series)
-                    
+
                     with col_ed2:
                         if opsi_edit != label_semua_edit:
                             angka_lama = str(opsi_edit).replace("Episode ", "")
                             ep_baru = st.text_input("Nomor Episode Baru (Ketik Angkanya Saja):", value=angka_lama)
                         else:
-                            st.write("") 
-                            st.write("") 
+                            st.write("")
+                            st.write("")
                             ep_baru = None
-                    
+
                     if st.button("💾 Simpan Perubahan Data", use_container_width=True):
                         with st.spinner("Memperbarui data di Cloud..."):
                             time.sleep(0.5)
                             df_riwayat_baru = df_riwayat.copy()
-                            
+
                             if opsi_edit == label_semua_edit:
-                                # Update semua baris yang nama series-nya sama
                                 df_riwayat_baru.loc[df_riwayat_baru['Series'] == pilihan_series, 'Series'] = series_baru
                                 st.session_state.crud_notif = f"Nama Series berhasil diubah dari '{pilihan_series}' menjadi '{series_baru}'!"
                             else:
-                                # Update hanya baris episode yang spesifik
                                 mask = (df_riwayat_baru['Series'] == pilihan_series) & (df_riwayat_baru['Episode'] == opsi_edit)
                                 df_riwayat_baru.loc[mask, 'Series'] = series_baru
                                 df_riwayat_baru.loc[mask, 'Episode'] = f"Episode {ep_baru.strip()}"
                                 st.session_state.crud_notif = f"Data '{pilihan_series} - {opsi_edit}' berhasil diperbarui!"
-                            
+
                             tulis_ulang_gsheet(df_riwayat_baru)
                             st.rerun()
-                
-                # --- LOGIKA HAPUS DATA ---
+
                 elif aksi_manajemen == "🗑️ Hapus Data":
                     st.warning("Hati-hati! Data yang dihapus dari Google Sheets tidak dapat dikembalikan.")
-                    
+
                     label_semua_hapus = f"Semua Episode {pilihan_series} (Hapus Seluruh Series Ini)"
                     opsi_hapus = st.selectbox(
                         "Pilih rentang data yang ingin dihapus:",
                         [label_semua_hapus] + daftar_ep_urut
                     )
-                    
+
                     if st.button("🗑️ Hapus Data Terpilih", use_container_width=True):
                         with st.spinner("Menghapus data di Cloud..."):
                             time.sleep(0.5)
@@ -529,7 +523,7 @@ with tab_riwayat:
                                 df_riwayat_baru = df_riwayat[~kondisi_hapus]
                                 tulis_ulang_gsheet(df_riwayat_baru)
                                 st.session_state.crud_notif = f"Data '{pilihan_series} - {opsi_hapus}' berhasil dihapus dari Google Sheets!"
-                            
+
                             st.rerun()
     else:
         st.info("Belum ada data yang tersimpan di Cloud Database. Silakan analisis video di tab sebelah dan klik 'Simpan'.")
