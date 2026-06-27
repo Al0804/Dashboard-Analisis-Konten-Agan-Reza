@@ -20,11 +20,30 @@ st.set_page_config(page_title="Dashboard Agan Reza", layout="wide")
 st.title("Dashboard Analisis Komentar Review Episode")
 st.write("Pantau mayoritas topik pembicaraan penonton secara Real-Time via Cloud Database.")
 
+# --- MANTRA CSS NUKLIR BUAT BANTAI LOGO GITHUB & MAHKOTA ---
 sembunyikan_menu = """
 <style>
-#MainMenu {visibility: hidden;}
-[data-testid="stToolbar"] {visibility: hidden;}
-footer {visibility: hidden;}
+    /* Ngilangin Menu titik tiga di pojok kanan atas */
+    #MainMenu {visibility: hidden;}
+    
+    /* Ngilangin Footer "Made with Streamlit" */
+    footer {visibility: hidden;}
+    
+    /* Ngilangin Header/Toolbar bawaan */
+    header {visibility: hidden;}
+    [data-testid="stHeader"] {display: none;}
+    [data-testid="stToolbar"] {display: none;}
+
+    /* INI INTI UNTUK BANTAI MAHKOTA (Viewer Badge) */
+    div[class^="viewerBadge_container"] {display: none !important;}
+    div[class*="viewerBadge_container"] {display: none !important;}
+    a[class^="viewerBadge_link"] {display: none !important;}
+    
+    /* Menghilangkan margin/padding sisa di atas supaya makin rapi */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 0rem;
+    }
 </style>
 """
 st.markdown(sembunyikan_menu, unsafe_allow_html=True)
