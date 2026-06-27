@@ -76,6 +76,7 @@ if sheet is None:
 # ==============================================================================
 # UTILITY FUNGSI GSHEETS
 # ==============================================================================
+@st.cache_data(ttl=60, show_spinner=False)
 def baca_gsheet():
     if sheet is None: return pd.DataFrame()
     records = sheet.get_all_records()
@@ -89,6 +90,7 @@ def simpan_ke_gsheet(df_baru):
     if len(sheet.get_all_values()) == 0:
         sheet.append_row(df_baru.columns.tolist())
     sheet.append_rows(data_list)
+    baca_gsheet.clear()  # data baru ditulis, paksa baca_gsheet ambil data segar lagi
 
 def tulis_ulang_gsheet(df_total):
     if sheet is None: return
@@ -96,6 +98,7 @@ def tulis_ulang_gsheet(df_total):
     sheet.append_row(df_total.columns.tolist())
     if not df_total.empty:
         sheet.append_rows(df_total.fillna("").values.tolist())
+    baca_gsheet.clear()  # data ditulis ulang, paksa baca_gsheet ambil data segar lagi
 
 # --- INISIALISASI MEMORI STREAMLIT ---
 if 'analisis_selesai' not in st.session_state:
@@ -404,24 +407,14 @@ with tab_riwayat:
                 if filter_kat != "Semua Kategori":
                     df_tampil = df_tampil[df_tampil[filter_kat] == 1]
 
-                st.markdown("---")
-                st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
-
                 for col in kolom_visualisasi:
                     df_tampil[col] = pd.to_numeric(df_tampil[col], errors='coerce').fillna(0).astype(int)
 
                 hitungan_kategori = df_tampil[kolom_visualisasi].sum()
 
-                m_cols = st.columns(len(kolom_visualisasi))
-                for idx, kat in enumerate(kolom_visualisasi):
-                    nama_label_bersih = kat.replace("_", " ")
-                    m_cols[idx].metric(label=nama_label_bersih, value=int(hitungan_kategori[kat]))
-
-                st.markdown("---")
                 fig_riwayat, ax_riwayat = plt.subplots(figsize=(12, 6))
 
                 if filter_ep == "Semua Episode":
-                    st.markdown(f"**Grafik Perjalanan Tren: {pilihan_series}**")
                     grafik_data = df_tampil.groupby('Episode')[kolom_visualisasi].sum().reset_index()
 
                     grafik_data['Sort_Key'] = grafik_data['Episode'].apply(urutkan_episode)
@@ -435,7 +428,6 @@ with tab_riwayat:
                     sns.barplot(data=grafik_melted, x='Episode', y='Total Komentar', hue='Kategori', palette='tab10', ax=ax_riwayat)
                     ax_riwayat.set_title(f'Distribusi Tren - {pilihan_series}', pad=15, fontweight='bold', fontsize=14)
                 else:
-                    st.markdown(f"**Distribusi Topik: {pilihan_series} ({filter_ep})**")
                     sns.barplot(x=hitungan_kategori.index, y=hitungan_kategori.values, palette='tab10', ax=ax_riwayat)
                     ax_riwayat.set_title(f'Fokus Topik - {filter_ep}', pad=15, fontweight='bold', fontsize=14)
 
@@ -445,18 +437,34 @@ with tab_riwayat:
                 if filter_ep == "Semua Episode":
                     plt.legend(title='Kategori', bbox_to_anchor=(1.02, 1), loc='upper left')
                 plt.tight_layout()
-                st.pyplot(fig_riwayat)
-
-                st.markdown("---")
-                st.markdown(f"**Tabel Eksplorasi Komentar: {pilihan_series}**")
 
                 if filter_kat == "Semua Kategori":
                     kolom_tampil = ['Episode', 'Komentar_Teks'] + kolom_visualisasi
                 else:
                     kolom_tampil = ['Episode', 'Komentar_Teks', filter_kat]
 
-                st.dataframe(df_tampil[kolom_tampil], use_container_width=True)
-                st.info(f"Ditemukan {len(df_tampil)} komentar sesuai filter di atas.")
+            st.success(f"✅ Data '{pilihan_series}' ({filter_ep}) berhasil dimuat!")
+
+            st.markdown("---")
+            st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
+
+            m_cols = st.columns(len(kolom_visualisasi))
+            for idx, kat in enumerate(kolom_visualisasi):
+                nama_label_bersih = kat.replace("_", " ")
+                m_cols[idx].metric(label=nama_label_bersih, value=int(hitungan_kategori[kat]))
+
+            st.markdown("---")
+            if filter_ep == "Semua Episode":
+                st.markdown(f"**Grafik Perjalanan Tren: {pilihan_series}**")
+            else:
+                st.markdown(f"**Distribusi Topik: {pilihan_series} ({filter_ep})**")
+            st.pyplot(fig_riwayat)
+
+            st.markdown("---")
+            st.markdown(f"**Tabel Eksplorasi Komentar: {pilihan_series}**")
+
+            st.dataframe(df_tampil[kolom_tampil], use_container_width=True)
+            st.info(f"Ditemukan {len(df_tampil)} komentar sesuai filter di atas.")
 
             st.markdown("---")
 
