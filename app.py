@@ -443,7 +443,27 @@ with tab_riwayat:
                 else:
                     kolom_tampil = ['Episode', 'Komentar_Teks', filter_kat]
 
-            st.success(f"✅ Data '{pilihan_series}' ({filter_ep}) berhasil dimuat!")
+            st.markdown(f"""
+            <style>
+            @keyframes autoHideSuccess {{
+                0% {{ opacity: 1; }}
+                97% {{ opacity: 1; }}
+                100% {{ opacity: 0; visibility: hidden; height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; }}
+            }}
+            .auto-hide-success {{
+                animation: autoHideSuccess 30s forwards;
+                background-color: rgba(33, 195, 84, 0.1);
+                color: rgb(23, 114, 51);
+                border: 1px solid rgba(33, 195, 84, 0.4);
+                border-radius: 0.5rem;
+                padding: 0.85rem 1rem;
+                margin-bottom: 1rem;
+                font-size: 0.95rem;
+                line-height: 1.4;
+            }}
+            </style>
+            <div class="auto-hide-success">✅ Data '{pilihan_series}' ({filter_ep}) berhasil dimuat!<span style="display:none;"> {time.time()}</span></div>
+            """, unsafe_allow_html=True)
 
             st.markdown("---")
             st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
