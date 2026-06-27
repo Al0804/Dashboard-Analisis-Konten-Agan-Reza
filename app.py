@@ -444,10 +444,17 @@ with tab_riwayat:
             with col_kat:
                 filter_kat = st.selectbox("Filter Kategori Spesifik:", ["Semua Kategori"] + kolom_visualisasi)
 
-            # Tandai kombinasi filter saat ini. Toast load di bawah HANYA muncul kalau
-            # kombinasi ini beda dari yang terakhir kali sukses/gagal ditampilkan -
-            # jadi tidak ikut nyala waktu user cuma klik radio Edit/Hapus Data dkk.
+            # Tandai kombinasi filter saat ini.
+            # -----------------------------------------------------------------------
+            # FIX: Saat pertama kali load/refresh (signature masih None), langsung
+            # set ke signature sekarang supaya toast TIDAK muncul di awal. Toast
+            # hanya akan muncul kalau user benar-benar mengganti pilihan filter.
+            # -----------------------------------------------------------------------
             signature_sekarang = (pilihan_series, filter_ep, filter_kat)
+
+            if st.session_state.riwayat_signature_terakhir is None:
+                st.session_state.riwayat_signature_terakhir = signature_sekarang
+
             filter_baru_dipilih = signature_sekarang != st.session_state.riwayat_signature_terakhir
 
             try:
