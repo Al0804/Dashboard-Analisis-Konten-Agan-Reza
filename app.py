@@ -20,30 +20,11 @@ st.set_page_config(page_title="Dashboard Agan Reza", layout="wide")
 st.title("Dashboard Analisis Komentar Review Episode")
 st.write("Pantau mayoritas topik pembicaraan penonton secara Real-Time via Cloud Database.")
 
-# --- MANTRA CSS NUKLIR BUAT BANTAI LOGO GITHUB & MAHKOTA ---
 sembunyikan_menu = """
 <style>
-    /* Ngilangin Menu titik tiga di pojok kanan atas */
-    #MainMenu {visibility: hidden;}
-    
-    /* Ngilangin Footer "Made with Streamlit" */
-    footer {visibility: hidden;}
-    
-    /* Ngilangin Header/Toolbar bawaan */
-    header {visibility: hidden;}
-    [data-testid="stHeader"] {display: none;}
-    [data-testid="stToolbar"] {display: none;}
-
-    /* INI INTI UNTUK BANTAI MAHKOTA (Viewer Badge) */
-    div[class^="viewerBadge_container"] {display: none !important;}
-    div[class*="viewerBadge_container"] {display: none !important;}
-    a[class^="viewerBadge_link"] {display: none !important;}
-    
-    /* Menghilangkan margin/padding sisa di atas supaya makin rapi */
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 0rem;
-    }
+#MainMenu {visibility: hidden;}
+[data-testid="stToolbar"] {visibility: hidden;}
+footer {visibility: hidden;}
 </style>
 """
 st.markdown(sembunyikan_menu, unsafe_allow_html=True)
@@ -119,6 +100,27 @@ def tulis_ulang_gsheet(df_total):
         sheet.append_rows(df_total.fillna("").values.tolist())
     baca_gsheet.clear()  # data ditulis ulang, paksa baca_gsheet ambil data segar lagi
 
+# ==============================================================================
+# UTILITY NOTIFIKASI (toast yang cuma muncul sekali, sesuai event yang relevan)
+# ==============================================================================
+# Streamlit mengeksekusi ULANG seluruh script setiap ada interaksi widget apapun,
+# termasuk tab yang sedang tidak aktif dilihat. Kalau toast diletakkan begitu saja
+# di tengah kode tanpa penanda "apakah event-nya baru saja terjadi", toast itu akan
+# muncul lagi di SETIAP rerun yang tidak ada hubungannya. Dua fungsi di bawah ini
+# dipakai supaya toast hanya tampil sekali, tepat setelah aksi terkait selesai.
+
+def set_notif(kunci, pesan, status='success'):
+    """Simpan notifikasi ke session_state. Dipanggil tepat sebelum st.rerun()."""
+    st.session_state[kunci] = {'pesan': pesan, 'status': status}
+
+def tampilkan_notif(kunci):
+    """Tampilkan toast sekali saja, lalu langsung dihapus dari memori."""
+    notif = st.session_state.get(kunci)
+    if notif:
+        icon = "✅" if notif['status'] == 'success' else "❌"
+        st.toast(notif['pesan'], icon=icon)
+        st.session_state[kunci] = None
+
 # --- INISIALISASI MEMORI STREAMLIT ---
 if 'analisis_selesai' not in st.session_state:
     st.session_state.analisis_selesai = False
@@ -128,12 +130,18 @@ if 'total_kategori' not in st.session_state:
     st.session_state.total_kategori = None
 if 'kolom_teks_aktif' not in st.session_state:
     st.session_state.kolom_teks_aktif = 'komentar'
-if 'save_status' not in st.session_state:
-    st.session_state.save_status = None
-if 'save_message' not in st.session_state:
-    st.session_state.save_message = None
-if 'crud_notif' not in st.session_state:
-    st.session_state.crud_notif = None
+if 'notif_tarik' not in st.session_state:
+    st.session_state.notif_tarik = None
+if 'notif_analisis' not in st.session_state:
+    st.session_state.notif_analisis = None
+if 'notif_simpan' not in st.session_state:
+    st.session_state.notif_simpan = None
+if 'notif_crud' not in st.session_state:
+    st.session_state.notif_crud = None
+if 'riwayat_signature_terakhir' not in st.session_state:
+    st.session_state.riwayat_signature_terakhir = None
+if 'csv_invalid_terakhir' not in st.session_state:
+    st.session_state.csv_invalid_terakhir = None
 
 # ==============================================================================
 # 2. CACHE MODEL & FUNGSI YOUTUBE SCRAPING
@@ -182,6 +190,11 @@ tab_analisis, tab_riwayat = st.tabs(["🔍 Analisis AI Real-Time", "🗂️ Riwa
 # TAB 1: MESIN ANALISIS
 # ------------------------------------------------------------------------------
 with tab_analisis:
+    # Tampilkan notifikasi hasil "tarik komentar" & "analisis AI" dari rerun sebelumnya
+    # (sekali tampil langsung hilang, jadi tidak nempel terus di setiap rerun lain).
+    tampilkan_notif('notif_tarik')
+    tampilkan_notif('notif_analisis')
+
     mode_input = st.radio(
         "Pilih Metode Analisis:",
         ('Tarik dari Link YouTube (Real-Time)', 'Unggah File CSV (Data Lama)')
@@ -206,9 +219,12 @@ with tab_analisis:
                     with st.spinner('Menyedot komentar dari YouTube...'):
                         hasil_scraping = tarik_komentar_youtube(vid_id, api_key, max_komen=2000)
                     if hasil_scraping:
-                        st.success(f"Berhasil menarik {len(hasil_scraping)} komentar!")
+                        set_notif('notif_tarik', f"Berhasil menarik {len(hasil_scraping)} komentar dari YouTube!", 'success')
                         df_mentah = pd.DataFrame(hasil_scraping, columns=['komentar'])
                         mulai_proses = True
+                    else:
+                        set_notif('notif_tarik', "Gagal menarik komentar. Cek API Key atau video belum punya komentar.", 'error')
+                        st.rerun()
                 else:
                     st.error("Link YouTube tidak valid. Gagal menemukan Video ID.")
 
@@ -216,11 +232,23 @@ with tab_analisis:
         st.markdown("### Masukkan Data Komentar")
         file_unggahan = st.file_uploader("Unggah file CSV komentar:", type=["csv"])
         if file_unggahan is not None:
-            df_mentah = pd.read_csv(file_unggahan)
-            kolom_teks = 'komentar_bersih' if 'komentar_bersih' in df_mentah.columns else 'komentar'
-            if st.button("Mulai Analisis CSV"):
-                st.session_state.analisis_selesai = False
-                mulai_proses = True
+            file_signature = f"{file_unggahan.name}-{file_unggahan.size}"
+            try:
+                df_csv = pd.read_csv(file_unggahan)
+                kolom_teks = 'komentar_bersih' if 'komentar_bersih' in df_csv.columns else 'komentar'
+                if kolom_teks not in df_csv.columns:
+                    if st.session_state.csv_invalid_terakhir != file_signature:
+                        st.toast("Gagal memuat CSV. Kolom 'komentar' tidak ditemukan di file.", icon="❌")
+                        st.session_state.csv_invalid_terakhir = file_signature
+                else:
+                    df_mentah = df_csv
+                    if st.button("Mulai Analisis CSV"):
+                        st.session_state.analisis_selesai = False
+                        mulai_proses = True
+            except Exception as e:
+                if st.session_state.csv_invalid_terakhir != file_signature:
+                    st.toast(f"Gagal membaca file CSV. Detail: {e}", icon="❌")
+                    st.session_state.csv_invalid_terakhir = file_signature
 
     # ==========================================================================
     # PROSES PREDIKSI UTAMA
@@ -233,56 +261,63 @@ with tab_analisis:
         status_teks = st.empty()
         semua_tebakan = []
         batch_size = 16
+        sumber_label = "video YouTube" if mode_input == 'Tarik dari Link YouTube (Real-Time)' else "file CSV"
 
-        with st.spinner('Model sedang menganalisis kalimat dengan cermat...'):
-            for i in range(0, total_data, batch_size):
-                batch_teks = teks_list[i : i + batch_size]
+        try:
+            with st.spinner('Model sedang menganalisis kalimat dengan cermat...'):
+                for i in range(0, total_data, batch_size):
+                    batch_teks = teks_list[i : i + batch_size]
 
-                max_len = 256
-                batas_tengah = int((max_len - 2) / 2)
+                    max_len = 256
+                    batas_tengah = int((max_len - 2) / 2)
 
-                tokens = tokenizer(batch_teks, truncation=False, padding=False)
-                input_ids_list = []
-                attention_mask_list = []
+                    tokens = tokenizer(batch_teks, truncation=False, padding=False)
+                    input_ids_list = []
+                    attention_mask_list = []
 
-                for ids in tokens['input_ids']:
-                    if len(ids) > max_len:
-                        kepala = ids[1 : batas_tengah + 1]
-                        ekor = ids[-(batas_tengah + 1) : -1]
-                        ids_baru = [ids[0]] + kepala + ekor + [ids[-1]]
-                        mask_baru = [1] * max_len
-                    else:
-                        ids_baru = ids
-                        mask_baru = [1] * len(ids)
+                    for ids in tokens['input_ids']:
+                        if len(ids) > max_len:
+                            kepala = ids[1 : batas_tengah + 1]
+                            ekor = ids[-(batas_tengah + 1) : -1]
+                            ids_baru = [ids[0]] + kepala + ekor + [ids[-1]]
+                            mask_baru = [1] * max_len
+                        else:
+                            ids_baru = ids
+                            mask_baru = [1] * len(ids)
 
-                    input_ids_list.append(ids_baru)
-                    attention_mask_list.append(mask_baru)
+                        input_ids_list.append(ids_baru)
+                        attention_mask_list.append(mask_baru)
 
-                inputs = tokenizer.pad(
-                    {'input_ids': input_ids_list, 'attention_mask': attention_mask_list},
-                    padding='max_length',
-                    max_length=max_len,
-                    return_tensors="pt"
-                )
+                    inputs = tokenizer.pad(
+                        {'input_ids': input_ids_list, 'attention_mask': attention_mask_list},
+                        padding='max_length',
+                        max_length=max_len,
+                        return_tensors="pt"
+                    )
 
-                with torch.no_grad():
-                    outputs = model(**inputs)
-                probabilitas = torch.sigmoid(outputs.logits).numpy()
-                tebakan = (probabilitas > 0.5).astype(int)
-                semua_tebakan.extend(tebakan)
+                    with torch.no_grad():
+                        outputs = model(**inputs)
+                    probabilitas = torch.sigmoid(outputs.logits).numpy()
+                    tebakan = (probabilitas > 0.5).astype(int)
+                    semua_tebakan.extend(tebakan)
 
-                progress_bar.progress(min((i + batch_size) / total_data, 1.0))
-                status_teks.text(f"Menganalisis {min(i + batch_size, total_data)} / {total_data} komentar...")
+                    progress_bar.progress(min((i + batch_size) / total_data, 1.0))
+                    status_teks.text(f"Menganalisis {min(i + batch_size, total_data)} / {total_data} komentar...")
 
-            kolom_yang_didrop = [kol for kol in kolom_kategori if kol in df_mentah.columns]
-            df_bersih = df_mentah.drop(columns=kolom_yang_didrop).reset_index(drop=True)
-            df_hasil = pd.DataFrame(semua_tebakan, columns=kolom_kategori)
-            df_hasil['Outlier'] = df_hasil.sum(axis=1).apply(lambda total: 1 if total == 0 else 0)
+                kolom_yang_didrop = [kol for kol in kolom_kategori if kol in df_mentah.columns]
+                df_bersih = df_mentah.drop(columns=kolom_yang_didrop).reset_index(drop=True)
+                df_hasil = pd.DataFrame(semua_tebakan, columns=kolom_kategori)
+                df_hasil['Outlier'] = df_hasil.sum(axis=1).apply(lambda total: 1 if total == 0 else 0)
 
-            st.session_state.df_final = pd.concat([df_bersih, df_hasil], axis=1)
-            st.session_state.total_kategori = df_hasil[kolom_visualisasi].sum()
-            st.session_state.kolom_teks_aktif = kolom_teks
-            st.session_state.analisis_selesai = True
+                st.session_state.df_final = pd.concat([df_bersih, df_hasil], axis=1)
+                st.session_state.total_kategori = df_hasil[kolom_visualisasi].sum()
+                st.session_state.kolom_teks_aktif = kolom_teks
+                st.session_state.analisis_selesai = True
+
+            set_notif('notif_analisis', f"Analisis selesai! {total_data} komentar dari {sumber_label} berhasil dikategorikan.", 'success')
+        except Exception as e:
+            st.session_state.analisis_selesai = False
+            set_notif('notif_analisis', f"Analisis gagal diproses. Detail: {e}", 'error')
 
         st.rerun()
 
@@ -290,8 +325,6 @@ with tab_analisis:
     # TAMPILKAN VISUALISASI DARI MEMORI
     # ==========================================================================
     elif st.session_state.analisis_selesai:
-        st.success("Analisis AI Selesai dan Tersimpan di Memori Sementara!")
-
         st.markdown("### Ringkasan Topik Pembicaraan")
         st.bar_chart(st.session_state.total_kategori.sort_values(ascending=False))
 
@@ -302,14 +335,7 @@ with tab_analisis:
         st.markdown("### 💾 Simpan Hasil ke Cloud Database")
         st.info("Data disalin langsung ke Google Sheets Agan Reza secara Real-Time.")
 
-        if st.session_state.save_status == 'success':
-            st.success(st.session_state.save_message)
-            st.session_state.save_status = None
-            st.session_state.save_message = None
-        elif st.session_state.save_status == 'error':
-            st.error(st.session_state.save_message)
-            st.session_state.save_status = None
-            st.session_state.save_message = None
+        tampilkan_notif('notif_simpan')
 
         df_temp = baca_gsheet()
         daftar_series_tersimpan = []
@@ -358,19 +384,22 @@ with tab_analisis:
                     is_valid = False
 
                 if is_valid:
-                    with st.spinner(f'Menyimpan data "{final_series} - {final_episode}" ke Cloud Database...'):
-                        df_simpan = st.session_state.df_final.copy()
-                        df_simpan['Series'] = final_series
-                        df_simpan['Episode'] = final_episode
-                        df_simpan = df_simpan.rename(columns={st.session_state.kolom_teks_aktif: "Komentar_Teks"})
+                    try:
+                        with st.spinner(f'Menyimpan data "{final_series} - {final_episode}" ke Cloud Database...'):
+                            df_simpan = st.session_state.df_final.copy()
+                            df_simpan['Series'] = final_series
+                            df_simpan['Episode'] = final_episode
+                            df_simpan = df_simpan.rename(columns={st.session_state.kolom_teks_aktif: "Komentar_Teks"})
 
-                        kolom_penting = ['Series', 'Episode', 'Komentar_Teks'] + kolom_visualisasi
-                        df_simpan = df_simpan[kolom_penting]
+                            kolom_penting = ['Series', 'Episode', 'Komentar_Teks'] + kolom_visualisasi
+                            df_simpan = df_simpan[kolom_penting]
 
-                        simpan_ke_gsheet(df_simpan)
+                            simpan_ke_gsheet(df_simpan)
 
-                    st.session_state.save_status = 'success'
-                    st.session_state.save_message = f"Berhasil! Data '{final_series} - {final_episode}' telah direkam abadi di Google Sheets."
+                        set_notif('notif_simpan', f"Data '{final_series} - {final_episode}' berhasil disimpan ke Google Sheets!", 'success')
+                    except Exception as e:
+                        set_notif('notif_simpan', f"Gagal menyimpan data '{final_series} - {final_episode}'. Detail: {e}", 'error')
+
                     st.rerun()
 
 # ------------------------------------------------------------------------------
@@ -379,12 +408,15 @@ with tab_analisis:
 with tab_riwayat:
     st.markdown("### Pantau Dinamika Tren & Baca Komentar Penonton")
 
-    if st.session_state.crud_notif:
-        st.success(st.session_state.crud_notif)
-        st.session_state.crud_notif = None
+    # Notifikasi hasil Edit/Hapus data dari rerun sebelumnya (sekali tampil, lalu hilang)
+    tampilkan_notif('notif_crud')
 
-    with st.spinner('Mengambil data terbaru dari Cloud Database...'):
-        df_riwayat = baca_gsheet()
+    try:
+        with st.spinner('Mengambil data terbaru dari Cloud Database...'):
+            df_riwayat = baca_gsheet()
+    except Exception as e:
+        st.toast(f"Gagal mengambil data dari Google Sheets. Detail: {e}", icon="❌")
+        df_riwayat = pd.DataFrame()
 
     if not df_riwayat.empty and 'Series' in df_riwayat.columns:
         df_riwayat['Series'] = df_riwayat['Series'].astype(str).str.strip()
@@ -412,52 +444,71 @@ with tab_riwayat:
             with col_kat:
                 filter_kat = st.selectbox("Filter Kategori Spesifik:", ["Semua Kategori"] + kolom_visualisasi)
 
-            with st.spinner(f'Memuat data "{pilihan_series}" ({filter_ep})...'):
-                df_tampil = data_terpilih.copy()
-                if filter_ep != "Semua Episode":
-                    df_tampil = df_tampil[df_tampil['Episode'] == filter_ep]
+            # Tandai kombinasi filter saat ini. Toast load di bawah HANYA muncul kalau
+            # kombinasi ini beda dari yang terakhir kali sukses/gagal ditampilkan -
+            # jadi tidak ikut nyala waktu user cuma klik radio Edit/Hapus Data dkk.
+            signature_sekarang = (pilihan_series, filter_ep, filter_kat)
+            filter_baru_dipilih = signature_sekarang != st.session_state.riwayat_signature_terakhir
 
-                if filter_kat != "Semua Kategori":
-                    df_tampil = df_tampil[df_tampil[filter_kat] == 1]
+            try:
+                with st.spinner(f'Memuat data "{pilihan_series}" ({filter_ep})...'):
+                    df_tampil = data_terpilih.copy()
+                    if filter_ep != "Semua Episode":
+                        df_tampil = df_tampil[df_tampil['Episode'] == filter_ep]
 
-                for col in kolom_visualisasi:
-                    df_tampil[col] = pd.to_numeric(df_tampil[col], errors='coerce').fillna(0).astype(int)
+                    if filter_kat != "Semua Kategori":
+                        df_tampil = df_tampil[df_tampil[filter_kat] == 1]
 
-                hitungan_kategori = df_tampil[kolom_visualisasi].sum()
+                    for col in kolom_visualisasi:
+                        df_tampil[col] = pd.to_numeric(df_tampil[col], errors='coerce').fillna(0).astype(int)
 
+                    hitungan_kategori = df_tampil[kolom_visualisasi].sum()
+
+                    fig_riwayat, ax_riwayat = plt.subplots(figsize=(12, 6))
+
+                    if filter_ep == "Semua Episode":
+                        grafik_data = df_tampil.groupby('Episode')[kolom_visualisasi].sum().reset_index()
+
+                        grafik_data['Sort_Key'] = grafik_data['Episode'].apply(urutkan_episode)
+                        grafik_data = grafik_data.sort_values('Sort_Key').drop(columns=['Sort_Key'])
+
+                        grafik_melted = grafik_data.melt(
+                            id_vars=['Episode'], value_vars=kolom_visualisasi,
+                            var_name='Kategori', value_name='Total Komentar'
+                        )
+
+                        sns.barplot(data=grafik_melted, x='Episode', y='Total Komentar', hue='Kategori', palette='tab10', ax=ax_riwayat)
+                        ax_riwayat.set_title(f'Distribusi Tren - {pilihan_series}', pad=15, fontweight='bold', fontsize=14)
+                    else:
+                        sns.barplot(x=hitungan_kategori.index, y=hitungan_kategori.values, palette='tab10', ax=ax_riwayat)
+                        ax_riwayat.set_title(f'Fokus Topik - {filter_ep}', pad=15, fontweight='bold', fontsize=14)
+
+                    ax_riwayat.set_xlabel('Kategori / Episode', fontweight='bold')
+                    ax_riwayat.set_ylabel('Jumlah Komentar', fontweight='bold')
+                    plt.xticks(rotation=45, ha='right')
+                    if filter_ep == "Semua Episode":
+                        plt.legend(title='Kategori', bbox_to_anchor=(1.02, 1), loc='upper left')
+                    plt.tight_layout()
+
+                    if filter_kat == "Semua Kategori":
+                        kolom_tampil = ['Episode', 'Komentar_Teks'] + kolom_visualisasi
+                    else:
+                        kolom_tampil = ['Episode', 'Komentar_Teks', filter_kat]
+
+                # Toast HANYA muncul kalau Series/Episode/Kategori baru saja diganti
+                if filter_baru_dipilih:
+                    label_kategori = "" if filter_kat == "Semua Kategori" else f" - Kategori: {filter_kat}"
+                    st.toast(f"Data '{pilihan_series}' ({filter_ep}){label_kategori} berhasil dimuat!", icon="✅")
+                    st.session_state.riwayat_signature_terakhir = signature_sekarang
+
+            except Exception as e:
+                if filter_baru_dipilih:
+                    st.toast(f"Gagal memuat data '{pilihan_series}' ({filter_ep}). Detail: {e}", icon="❌")
+                    st.session_state.riwayat_signature_terakhir = signature_sekarang
+                df_tampil = pd.DataFrame(columns=['Episode', 'Komentar_Teks'] + kolom_visualisasi)
+                hitungan_kategori = pd.Series(0, index=kolom_visualisasi)
                 fig_riwayat, ax_riwayat = plt.subplots(figsize=(12, 6))
-
-                if filter_ep == "Semua Episode":
-                    grafik_data = df_tampil.groupby('Episode')[kolom_visualisasi].sum().reset_index()
-
-                    grafik_data['Sort_Key'] = grafik_data['Episode'].apply(urutkan_episode)
-                    grafik_data = grafik_data.sort_values('Sort_Key').drop(columns=['Sort_Key'])
-
-                    grafik_melted = grafik_data.melt(
-                        id_vars=['Episode'], value_vars=kolom_visualisasi,
-                        var_name='Kategori', value_name='Total Komentar'
-                    )
-
-                    sns.barplot(data=grafik_melted, x='Episode', y='Total Komentar', hue='Kategori', palette='tab10', ax=ax_riwayat)
-                    ax_riwayat.set_title(f'Distribusi Tren - {pilihan_series}', pad=15, fontweight='bold', fontsize=14)
-                else:
-                    sns.barplot(x=hitungan_kategori.index, y=hitungan_kategori.values, palette='tab10', ax=ax_riwayat)
-                    ax_riwayat.set_title(f'Fokus Topik - {filter_ep}', pad=15, fontweight='bold', fontsize=14)
-
-                ax_riwayat.set_xlabel('Kategori / Episode', fontweight='bold')
-                ax_riwayat.set_ylabel('Jumlah Komentar', fontweight='bold')
-                plt.xticks(rotation=45, ha='right')
-                if filter_ep == "Semua Episode":
-                    plt.legend(title='Kategori', bbox_to_anchor=(1.02, 1), loc='upper left')
-                plt.tight_layout()
-
-                if filter_kat == "Semua Kategori":
-                    kolom_tampil = ['Episode', 'Komentar_Teks'] + kolom_visualisasi
-                else:
-                    kolom_tampil = ['Episode', 'Komentar_Teks', filter_kat]
-
-            # Munculkan pop-up toast yang hilang otomatis tanpa menuhin layar
-            st.toast(f"Data '{pilihan_series}' ({filter_ep}) berhasil dimuat!", icon="✅")
+                kolom_tampil = ['Episode', 'Komentar_Teks'] + kolom_visualisasi
 
             st.markdown("---")
             st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
@@ -508,21 +559,27 @@ with tab_riwayat:
                             ep_baru = None
 
                     if st.button("💾 Simpan Perubahan Data", use_container_width=True):
-                        with st.spinner("Memperbarui data di Cloud..."):
-                            time.sleep(0.5)
-                            df_riwayat_baru = df_riwayat.copy()
+                        try:
+                            with st.spinner("Memperbarui data di Cloud..."):
+                                time.sleep(0.5)
+                                df_riwayat_baru = df_riwayat.copy()
 
-                            if opsi_edit == label_semua_edit:
-                                df_riwayat_baru.loc[df_riwayat_baru['Series'] == pilihan_series, 'Series'] = series_baru
-                                st.session_state.crud_notif = f"Nama Series berhasil diubah dari '{pilihan_series}' menjadi '{series_baru}'!"
-                            else:
-                                mask = (df_riwayat_baru['Series'] == pilihan_series) & (df_riwayat_baru['Episode'] == opsi_edit)
-                                df_riwayat_baru.loc[mask, 'Series'] = series_baru
-                                df_riwayat_baru.loc[mask, 'Episode'] = f"Episode {ep_baru.strip()}"
-                                st.session_state.crud_notif = f"Data '{pilihan_series} - {opsi_edit}' berhasil diperbarui!"
+                                if opsi_edit == label_semua_edit:
+                                    df_riwayat_baru.loc[df_riwayat_baru['Series'] == pilihan_series, 'Series'] = series_baru
+                                    pesan_sukses = f"Nama Series berhasil diubah dari '{pilihan_series}' menjadi '{series_baru}'!"
+                                else:
+                                    mask = (df_riwayat_baru['Series'] == pilihan_series) & (df_riwayat_baru['Episode'] == opsi_edit)
+                                    df_riwayat_baru.loc[mask, 'Series'] = series_baru
+                                    df_riwayat_baru.loc[mask, 'Episode'] = f"Episode {ep_baru.strip()}"
+                                    pesan_sukses = f"Data '{pilihan_series} - {opsi_edit}' berhasil diperbarui!"
 
-                            tulis_ulang_gsheet(df_riwayat_baru)
-                            st.rerun()
+                                tulis_ulang_gsheet(df_riwayat_baru)
+
+                            set_notif('notif_crud', pesan_sukses, 'success')
+                        except Exception as e:
+                            set_notif('notif_crud', f"Gagal memperbarui data '{pilihan_series}'. Detail: {e}", 'error')
+
+                        st.rerun()
 
                 elif aksi_manajemen == "🗑️ Hapus Data":
                     st.warning("Hati-hati! Data yang dihapus dari Google Sheets tidak dapat dikembalikan.")
@@ -534,18 +591,23 @@ with tab_riwayat:
                     )
 
                     if st.button("🗑️ Hapus Data Terpilih", use_container_width=True):
-                        with st.spinner("Menghapus data di Cloud..."):
-                            time.sleep(0.5)
-                            if opsi_hapus == label_semua_hapus:
-                                df_riwayat_baru = df_riwayat[df_riwayat['Series'] != pilihan_series]
-                                tulis_ulang_gsheet(df_riwayat_baru)
-                                st.session_state.crud_notif = f"Seluruh data '{pilihan_series}' berhasil dibantai dari Google Sheets!"
-                            else:
-                                kondisi_hapus = (df_riwayat['Series'] == pilihan_series) & (df_riwayat['Episode'] == opsi_hapus)
-                                df_riwayat_baru = df_riwayat[~kondisi_hapus]
-                                tulis_ulang_gsheet(df_riwayat_baru)
-                                st.session_state.crud_notif = f"Data '{pilihan_series} - {opsi_hapus}' berhasil dihapus dari Google Sheets!"
+                        try:
+                            with st.spinner("Menghapus data di Cloud..."):
+                                time.sleep(0.5)
+                                if opsi_hapus == label_semua_hapus:
+                                    df_riwayat_baru = df_riwayat[df_riwayat['Series'] != pilihan_series]
+                                    tulis_ulang_gsheet(df_riwayat_baru)
+                                    pesan_sukses = f"Seluruh data '{pilihan_series}' berhasil dibantai dari Google Sheets!"
+                                else:
+                                    kondisi_hapus = (df_riwayat['Series'] == pilihan_series) & (df_riwayat['Episode'] == opsi_hapus)
+                                    df_riwayat_baru = df_riwayat[~kondisi_hapus]
+                                    tulis_ulang_gsheet(df_riwayat_baru)
+                                    pesan_sukses = f"Data '{pilihan_series} - {opsi_hapus}' berhasil dihapus dari Google Sheets!"
 
-                            st.rerun()
+                            set_notif('notif_crud', pesan_sukses, 'success')
+                        except Exception as e:
+                            set_notif('notif_crud', f"Gagal menghapus data '{pilihan_series}'. Detail: {e}", 'error')
+
+                        st.rerun()
     else:
         st.info("Belum ada data yang tersimpan di Cloud Database. Silakan analisis video di tab sebelah dan klik 'Simpan'.")
