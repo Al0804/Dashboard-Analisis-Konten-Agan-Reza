@@ -183,8 +183,6 @@ with tab_analisis:
             else:
                 vid_id = ekstrak_video_id(url_video)
                 if vid_id:
-                    # ✅ FIX #1: Reset state SEBELUM analisis baru dimulai
-                    # agar form lama tidak ikut muncul selama proses berlangsung
                     st.session_state.analisis_selesai = False
                     with st.spinner('Menyedot komentar dari YouTube...'):
                         hasil_scraping = tarik_komentar_youtube(vid_id, api_key, max_komen=2000)
@@ -202,7 +200,6 @@ with tab_analisis:
             df_mentah = pd.read_csv(file_unggahan)
             kolom_teks = 'komentar_bersih' if 'komentar_bersih' in df_mentah.columns else 'komentar'
             if st.button("Mulai Analisis CSV"):
-                # ✅ FIX #1 (CSV): Reset state sebelum analisis baru
                 st.session_state.analisis_selesai = False
                 mulai_proses = True
 
@@ -272,9 +269,6 @@ with tab_analisis:
 
     # ==========================================================================
     # TAMPILKAN VISUALISASI DARI MEMORI
-    # ✅ FIX #2 (KUNCI UTAMA): Ganti 'if' jadi 'elif'
-    # Blok ini HANYA jalan kalau blok prediksi di atas TIDAK sedang jalan.
-    # Ini yang mencegah form muncul dobel saat model lagi proses.
     # ==========================================================================
     elif st.session_state.analisis_selesai:
         st.success("Analisis AI Selesai dan Tersimpan di Memori Sementara!")
@@ -443,27 +437,8 @@ with tab_riwayat:
                 else:
                     kolom_tampil = ['Episode', 'Komentar_Teks', filter_kat]
 
-            st.markdown(f"""
-            <style>
-            @keyframes autoHideSuccess {{
-                0% {{ opacity: 1; }}
-                97% {{ opacity: 1; }}
-                100% {{ opacity: 0; visibility: hidden; height: 0; margin: 0; padding: 0; overflow: hidden; border: 0; }}
-            }}
-            .auto-hide-success {{
-                animation: autoHideSuccess 30s forwards;
-                background-color: rgba(33, 195, 84, 0.1);
-                color: rgb(23, 114, 51);
-                border: 1px solid rgba(33, 195, 84, 0.4);
-                border-radius: 0.5rem;
-                padding: 0.85rem 1rem;
-                margin-bottom: 1rem;
-                font-size: 0.95rem;
-                line-height: 1.4;
-            }}
-            </style>
-            <div class="auto-hide-success">✅ Data '{pilihan_series}' ({filter_ep}) berhasil dimuat!<span style="display:none;"> {time.time()}</span></div>
-            """, unsafe_allow_html=True)
+            # Ganti animasi CSS custom dengan komponen bawaan Streamlit
+            st.success(f"✅ Data '{pilihan_series}' ({filter_ep}) berhasil dimuat!")
 
             st.markdown("---")
             st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
