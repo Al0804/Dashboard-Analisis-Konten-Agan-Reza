@@ -437,8 +437,8 @@ with tab_riwayat:
                 else:
                     kolom_tampil = ['Episode', 'Komentar_Teks', filter_kat]
 
-            # Ganti animasi CSS custom dengan komponen bawaan Streamlit
-            st.success(f"✅ Data '{pilihan_series}' ({filter_ep}) berhasil dimuat!")
+            # Munculkan pop-up toast yang hilang otomatis tanpa menuhin layar
+            st.toast(f"Data '{pilihan_series}' ({filter_ep}) berhasil dimuat!", icon="✅")
 
             st.markdown("---")
             st.markdown(f"### 📊 Ringkasan Jumlah Komentar: {filter_ep}")
